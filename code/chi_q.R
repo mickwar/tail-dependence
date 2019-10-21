@@ -9,23 +9,55 @@
 BivariateTail = setRefClass(
     "BivariateTail",
 
-    fields = list(
-        cone = "matrix",
-        angles = "numeric",
-        chi = "numeric"
+    # Using the list option for `fields` had problems with using the "BDPdensity"
+    # class for `bdp`. Opted here to use the generic approach.
+    fields = c(
+        "cone",
+        "angles",
+        "chi_dat",    # chi calculated from data
+        "chi_pp",      # chi calcualted from posterior predictive
+        "bdp",
+        "pred_angle",
+        "pred_cone",
+        "pred_y"
         ),
+    #fields = list(
+    #    cone = "matrix",
+    #    angles = "numeric",
+    #    chi_dat = "numeric",    # chi calculated from data
+    #    bdp = "BDPdensity",
+    #    pred_angle = "numeric",
+    #    pred_cone = "matrix",
+    #    chi_pp = "numeric"      # chi calcualted from posterior predictive
+    #    ),
 
     methods = list(
 
-        initialize = function(x, iscone = TRUE){
-            if (iscone){
-                cone <<- x
-                angles <<- coneToAngle(cone)
-            } else {
-                angles <<- x
+        initialize = function(cone = NULL, angles = NULL){
+            # cone   - n by 2 matrix with values in [0, 1] and the maximum
+            #          between each pair (row) is 1.
+            # angles - vector of angles from the origin to the cone in radians,
+            #          should be in [0, pi/2]
+            #
+            # Able to handle raw values / magnitudes for the extreme values?
+
+            if (is.null(cone) && is.null(angles))
+                stop("One of `cone` or `angles` must be given.")
+
+            # If the angles are given, calculate the their points on the cone
+            if (is.null(cone)){
+                angles <<- angles
                 cone <<- angleToCone(angles)
                 }
-            calculateChi(cone)
+
+            # If the cone is given, calculate the scaled angles
+            if (is.null(angles)){
+                cone <<- cone
+                angles <<- coneToAngle(cone)
+                }
+
+            # Compute chi just from the data
+            chi_dat <<- calculateChi(cone)
             },
 
         # Convert angles on [0, pi/2] to the non-negative unit circle with
@@ -51,11 +83,84 @@ BivariateTail = setRefClass(
             z2 = cone[ind, 2] / mean(cone[, 2])
             z = cbind(z1, z2)
             m1 = apply(z, 1, min)
-            chi <<- mean(m1) * mean(ind)
+            return (mean(m1) * mean(ind))
             },
 
+        # Fit Bernstein-Dirichlet prior to the angles
+        doBDP = function(mcmc, prior, nsamples = 10000, scaled = FALSE){
+
+            # DPpackage is deprecated
+            require(DPpackage)
+
+            # mcmc     - list that is passed to BDPdensity
+            # prior    - list that is passed to BDPdensity
+            # nsamples - number of posterior samples to use
+            # scaled   - boolean, were the angles scaled to [0, 1]?
+            if (missing(mcmc)){
+                mcmc = list(nburn = 1000,
+                    nsave = 1000,
+                    nskip= 1,
+                    ndisplay = 100)
+                }
+            if (missing(prior)){
+                prior = list(aa0 = 1,
+                    ab0 = 0.1,
+                    kmax = 50,
+                    a0 = 1,
+                    b0 = 1)
+                }
+
+            if (scaled){
+                scAngles = angles
+            } else {
+                scAngles = angles * 2/pi
+                }
+
+            # Don't fit the BDP with values too close to the edges
+            ind_rm_0 = (scAngles <= 0.005)
+            ind_rm_1 = (scAngles >= 0.995)
+            ind_rm = (ind_rm_0 | ind_rm_1)
+
+            # Fit Bernstein-Dirichlet prior
+            # This can take a while
+            cat(paste0("Fitting a Bernstein polynomial Dirichlet prior of order ", prior$kmax, "."))
+            cat("\nThis may take a while (about 10 minutes).")
+            bdp <<- BDPdensity(y = scAngles[!ind_rm],
+                prior = prior, mcmc = mcmc,
+                state = NULL, status = TRUE, support = 1)
+
+            # Posterior predictive distribution
+            pred_angle <<- sample(bdp$grid, nsamples, replace = TRUE, prob = bdp$fun)
+
+            # Manually insert 0's and 1's
+            pred_ind = sample(c(0,1,2), nsamples, replace = TRUE,
+                prob = c(mean(ind_rm_0), mean(ind_rm_1), 1-mean(ind_rm)))
+            pred_angle[pred_ind == 0] <<- 0
+            pred_angle[pred_ind == 1] <<- 1
+
+            # Convert posterior angle to posterior cone
+            pred_cone <<- angleToCone(pred_angle * pi/2)
+
+            # Calculate chi from the posterior predictive
+            chi_pp <<- calculateChi(pred_cone)
+
+            # The data should have previously been transformed to
+            # a stadard Frechet, so now we can get posterior samples
+            # of the exceedances
+            # The support should be the positive quadrant without the
+            # unit square [0, 1] * [0, 1].
+            pred_v = 1/runif(nsamples)
+            pred_y <<- pred_v * pred_cone
+
+            # Compute chi as u approaches 1
+            #u = seq(0.8, 0.999, length = 30)
+            #calculateChi
+
+            },
+
+
         # Plotting
-        plot = function(){
+        doPlot = function(){
 
             # TODO: The Y's (standard paretos) are the exceedances
             #denom1 = sapply(u, function(x) mean(Y * V[,1] > mean(V[,1]) / (1-x)) )
@@ -88,8 +193,11 @@ ind = which(angles <= pi/4)
 cone[ind,] = cone[ind, c(2,1)]
 
 
-test1 = BivariateTail$new(cone)
-test2 = BivariateTail$new(angles, iscone = FALSE)
+obj = BivariateTail$new(cone, NULL)
+#test2 = BivariateTail$new(NULL, angles)
 
-test1$chi
+head(obj$angles)
+head(obj$cone)
+obj$chi_dat
 
+obj$doBDP()
