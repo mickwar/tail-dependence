@@ -338,6 +338,9 @@ UnivariateGPD = setRefClass(
                 nthin = 1, window = window, bounds = list("lower" = c(0, -Inf),
                 "upper" = c(Inf, Inf)), chain_init = chainInit)
 
+            posterior$sigma <<- as.numeric(posterior$params[,1])
+            posterior$ksi <<- as.numeric(posterior$params[,2])
+
             },
 
         # Requires fitGPD() to be run
@@ -364,13 +367,29 @@ UnivariateGPD = setRefClass(
 
             }
 
+        # Transform entire raw data vector to standard Frechet variates based
+        # on the posterior parameters from the generalized Pareto distribution
+        # fit.G
+        # @method
+        transformToFrechet = function(){
+            if (is.null(posterior))
+                stop("Must run UnivariateGPD$fitGPD() first.")
+
+            # This looks a transformation to Pareto, not to Frechet. I got
+            # this from the old code, but I don't understand it.
+            #ksi = mean(posterior$ksi)
+            #sigma = mean(posterior$sigma)
+            #y = (1 + ksi/sigma * (x - threshold)) ^ (1/ksi)
+
+            }
+
         )
     )
 
 #x = rnorm(10000)
 
 set.seed(1)
-n = 50000
+n = 40000
 #x = rnorm(n)
 x = double(n)
 x[1] = rnorm(1, 0, 10)
@@ -381,22 +400,12 @@ for (i in 2:n)
 
 
 obj = UnivariateGPD(x, u_q = 0.95)
-obj$fitGPD()
-
-mean(obj$posterior$accept)
-
-par(mfrow = c(2,2))
-plot_hpd(obj$posterior$params[,1], main = "sigma", col1 = 'red')
-plot_hpd(obj$posterior$params[,2], main = "ksi", col1 = 'blue')
-
 
 obj$estimateTheta(likelihood = "ferro", method = "bayesian")
 obj$decluster()
 obj$fitGPD()
 
-mean(obj$posterior$accept)
-plot_hpd(obj$posterior$params[,1], main = "sigma", col1 = 'red')
-plot_hpd(obj$posterior$params[,2], main = "ksi", col1 = 'blue')
 
 mean(obj$proc$theta)
-
+plot_hpd(obj$posterior$params[,1], main = "sigma", col1 = 'red')
+plot_hpd(obj$posterior$params[,2], main = "ksi", col1 = 'blue')
