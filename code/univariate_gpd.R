@@ -10,9 +10,12 @@ UnivariateGPD = setRefClass(
 
     fields = list(
         x = "numeric",                  # raw data
+        exceed_raw = "numeric",         # raw exceedances
+        exceed_ind = "numeric",         # the indices
         threshold_quantile = "numeric", # threshold quantile used
         threshold = "numeric",          # threshold value used
-        proc = "list"                   # processed data (for declustering)
+        proc = "list",                  # processed data (for declustering)
+        posterior = "list"
         ),
 
     # proc is list with the following tags:
@@ -39,25 +42,39 @@ UnivariateGPD = setRefClass(
         # Combine with MRL?
 
         # @method
-        initialize = function(x, threshold_quantile, threshold){
+        initialize = function(x, u_q, u){
+            "
+            @param x   numeric vector, the observations
+            @param u_q numeric, the threshold quantile, should be in (0, 1)
+            @param u   numeric, the threshold
+            "
             x <<- x
 
-            if (!missing(threshold_quantile) && !missing(threshold))
+            if (missing(u_q) && missing(u))
+                stop("Specify either threshold_quantile or threshold.")
+
+            if (!missing(u_q) && !missing(u))
                 warning(
                     paste0("Both the quantile and the absolute value for ",
                         "threshold were provided when only 1 needs to be ",
                         "given. Be sure these quantities agree.")
                     )
 
-            if (missing(threshold_quantile)){
+            if (missing(u_q)){
                 warning("Threshold quantile set to default of 0.9")
                 threshold_quantile <<- 0.9
             } else {
-                threshold_quantile <<- threshold_quantile
+                threshold_quantile <<- u_q
                 }
 
-            if (missing(threshold))
+            if (missing(u)){
                 threshold <<- quantile(x, threshold_quantile)
+            } else {
+                threshold <<- u
+                }
+
+            exceed_raw <<- x[x >= threshold] - threshold
+            exceed_ind <<- which(x >= threshold)
 
             # Option to just run all the functions on initialization?
 
@@ -103,6 +120,8 @@ UnivariateGPD = setRefClass(
 
             proc$likelihood <<- likelihood
             proc$method <<- method
+
+            print("Estimating theta (extremal index).")
 
             ### Estimating theta (extremal index)
             # Classical estimation
@@ -202,6 +221,8 @@ UnivariateGPD = setRefClass(
         decluster = function(){
             if (is.null(proc$exceed_index))
                 stop("Must run UnivariateGPD$estimateTheta() first")
+
+            print("Declustering exceedances based on mean estimate for theta.")
             
             # C is the number of clusters
             C = floor(mean(proc$theta)*proc$N)+1
@@ -253,13 +274,69 @@ UnivariateGPD = setRefClass(
             proc$T_C <<- T_C
 
             # Get the greatest value within each (independent) cluster
-            proc$y <<- sapply(nice.C, max)
+            proc$y <<- sapply(nice.C, max) - threshold
 
+            # Do I need the index of where those declustered exceedances occur?
+            # Need to remember how the declustering affect the bivariate analysis.
 
             },
 
         # @method
-        fitGPD = function(){
+        # No zeta?
+        fitGPD = function(m_ksi = 0, s_ksi = 10, nmcmc = 10000, nburn = 10000,
+            window = 200, chainInit = c(1, 1e-6)){
+            # Priors: ksi   ~ Normal(m_ksi, s_ksi^2)
+            #         sigma ~ 1/sigma
+
+            require(mwBASE)
+
+            dat = list()
+
+            # Check if decluster() was run. If so, fit the model on the
+            # declustered exceedances. Otherwise, fit to the raw exceedances.
+            if (is.null(proc$y)){
+                print("Exceedances not declustered. Fitting model on raw exceedances.")
+                dat$y = exceed_raw
+                dat$n_c = length(dat$y)
+            } else {
+                print("Fitting model on declustered exceedances.")
+                dat$y = proc$y
+                dat$n_c = length(dat$y)
+                }
+
+            calcPosterior = function(dat, params){
+
+                # dat is a list where dat$y is the exceedances, dat$n_c is the number of clusters
+                sigma = params[1]
+                ksi = params[2]
+
+                # (lower) boundary check
+                #if (any(1 + ksi*dat$y/sigma < 0))
+                #    return (-Inf)
+
+                # other boundary checks?
+                if (ksi < 0 && max(dat$y) >= -sigma/ksi)
+                    return (-Inf)
+                if (sigma < 0)
+                    return (-Inf)
+
+                # Likelihood
+                if (ksi != 0){
+                    out = -dat$n_c*log(sigma) - (1 + 1/ksi)*sum(log(1+ksi*dat$y/sigma))
+                } else {
+                    out = -dat$n_c*log(sigma) - sum(dat$y)/sigma
+                    }
+
+                # Priors
+                out = out - log(sigma)
+                out = out + dnorm(ksi, m_ksi, s_ksi, log = TRUE)
+
+                return (out)
+                }
+
+            posterior <<- mcmc_sampler(dat, calcPosterior, 2, nmcmc = nmcmc, nburn = nburn,
+                nthin = 1, window = window, bounds = list("lower" = c(0, -Inf),
+                "upper" = c(Inf, Inf)), chain_init = chainInit)
 
             },
 
@@ -272,28 +349,54 @@ UnivariateGPD = setRefClass(
         # @method
         returnLevels = function(){
             
+            # Formula:
+            # rl = u + sigma / ksi * [ (m * zeta * theta) ^ ksi - 1 ]
+            #
+            # rl is the quantity exceeded on average one every m observations.
+            #
+            # u is the threshold
+            #
+            # ksi is the shape for the GPD
+            # sigma is the scale for the GPD
+            #
+            # zeta is the probability of exceeding the threshold
+            # theta is the extremal index (probability of being in a cluster)
 
             }
+
         )
     )
 
 #x = rnorm(10000)
 
-n = 4000
+set.seed(1)
+n = 50000
+#x = rnorm(n)
 x = double(n)
-x[1] = rnorm(1)
+x[1] = rnorm(1, 0, 10)
 for (i in 2:n)
-    x[i] = 0.9 * x[i-1] + rnorm(1)
-
-plot(x, type = 'l')
+    x[i] = 0.9 * x[i-1] + rnorm(1, 0, 10)
 
 
-obj = UnivariateGPD$new(x, threshold_quantile = 0.9)
+
+
+obj = UnivariateGPD(x, u_q = 0.95)
+obj$fitGPD()
+
+mean(obj$posterior$accept)
+
+par(mfrow = c(2,2))
+plot_hpd(obj$posterior$params[,1], main = "sigma", col1 = 'red')
+plot_hpd(obj$posterior$params[,2], main = "ksi", col1 = 'blue')
+
 
 obj$estimateTheta(likelihood = "ferro", method = "bayesian")
 obj$decluster()
+obj$fitGPD()
 
-hist(obj$proc$theta)
+mean(obj$posterior$accept)
+plot_hpd(obj$posterior$params[,1], main = "sigma", col1 = 'red')
+plot_hpd(obj$posterior$params[,2], main = "ksi", col1 = 'blue')
+
 mean(obj$proc$theta)
 
-obj$proc$y
